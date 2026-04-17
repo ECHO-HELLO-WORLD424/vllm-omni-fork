@@ -1232,6 +1232,17 @@ class OmniDiffusionConfig:
                     "that require additional inputs."
                 )
             else:
+                # LingBot-VA style checkpoints may only have component folders
+                # (tokenizer/text_encoder/transformer/vae) without root config.
+                from vllm_omni.diffusion.utils.hf_utils import _looks_like_lingbot_va
+
+                if _looks_like_lingbot_va(self.model):
+                    tf_cfg = get_hf_file_to_dict("transformer/config.json", self.model)
+                    self.model_class_name = "LingBotVAPipeline"
+                    self.set_tf_model_config(TransformerConfig.from_dict(tf_cfg))
+                    self.update_multimodal_support()
+                    return
+
                 cfg = get_hf_file_to_dict("config.json", self.model)
                 if cfg is None:
                     # Lance ships its top-level config.json one directory above

@@ -321,6 +321,11 @@ _DIFFUSION_MODELS = {
         "pipeline_krea2",
         "Krea2Pipeline",
     ),
+    "LingBotVAPipeline": (
+        "lingbot_va",
+        "pipeline_lingbot_va",
+        "LingBotVAPipeline",
+    ),
 }
 
 
@@ -338,6 +343,7 @@ _NO_CACHE_ACCELERATION = {
     # Pipelines that do not support cache acceleration (cache_dit / tea_cache).
     "NextStep11Pipeline",
     "AudioXPipeline",
+    "LingBotVAPipeline",
 }
 
 
@@ -562,6 +568,7 @@ _DIFFUSION_POST_PROCESS_FUNCS = {
     "StableDiffusionXLPipeline": "get_sdxl_image_post_process_func",
     "Krea2Pipeline": "get_krea2_post_process_func",
     "HunyuanImage3ForCausalMM": "get_hunyuan_image3_post_process_func",
+    "LingBotVAPipeline": "get_lingbot_va_post_process_func",
 }
 
 _DIFFUSION_IR_OP_PRIORITY_FUNCS = {
@@ -600,6 +607,7 @@ _DIFFUSION_PRE_PROCESS_FUNCS = {
     "Cosmos3OmniPipeline": "get_cosmos3_pre_process_func",
     "SoulXSingerPipeline": "get_soulxsinger_pre_process_func",
     "SoulXSingerSVCPipeline": "get_soulxsinger_svc_pre_process_func",
+    "LingBotVAPipeline": "get_lingbot_va_pre_process_func",
 }
 
 

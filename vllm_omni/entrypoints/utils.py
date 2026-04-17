@@ -19,6 +19,7 @@ from vllm_omni.config.yaml_util import create_config, load_yaml_config, merge_co
 from vllm_omni.diffusion.utils.hf_utils import (
     _looks_like_dreamzero,
     get_diffusion_model_index,
+    is_diffusion_model,
 )
 from vllm_omni.entrypoints.stage_utils import _to_dict
 from vllm_omni.inputs.data import OmniSamplingParams
@@ -318,6 +319,16 @@ def resolve_model_config_path(model: str) -> str | None:
             # YAML filenames before giving up.
             model_type = _try_resolve_omni_model_type(model)
             if model_type is None:
+                # Some diffusion-style checkpoints (e.g. LingBot-VA) don't
+                # provide root config.json/model_index.json. Let caller fall
+                # back to the default diffusion single-stage config.
+                if is_diffusion_model(model):
+                    logger.info(
+                        "Model '%s' detected as diffusion without root config; "
+                        "falling back to default diffusion stage config.",
+                        model,
+                    )
+                    return None
                 raise ValueError(
                     f"Could not determine model_type for model: {model}. "
                     "Model is not in standard transformers or Diffusers format. "

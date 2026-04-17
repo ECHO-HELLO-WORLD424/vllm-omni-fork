@@ -71,6 +71,23 @@ def _looks_like_dreamzero(model_name: str) -> bool:
         return False
 
 
+def _looks_like_lingbot_va(model_name: str) -> bool:
+    """Best-effort detection for LingBot-VA checkpoints.
+
+    LingBot checkpoints may omit root model_index.json/config.json and only
+    include component folders. We inspect transformer/config.json.
+    """
+    try:
+        cfg = get_hf_file_to_dict("transformer/config.json", model_name)
+        if cfg is None:
+            return False
+        if cfg.get("_class_name") != "WanTransformer3DModel":
+            return False
+        return "action_dim" in cfg
+    except Exception:
+        return False
+
+
 @lru_cache
 def is_diffusion_model(model_name: str) -> bool:
     """Check if a model is a diffusion model.
@@ -115,7 +132,11 @@ def is_diffusion_model(model_name: str) -> bool:
     except Exception as e:
         logger.debug("Failed to load diffusers config via DiffusionPipeline: %s", e)
 
-        # Bagel and DreamZero are not diffusers pipelines (no model_index.json),
-        # but are still diffusion-style models in vllm-omni. Detect them via
-        # config.json.
-    return _looks_like_bagel(model_name) or _looks_like_dreamzero(model_name)
+        # Bagel, DreamZero and LingBot-VA are not diffusers pipelines (no
+        # model_index.json), but are still diffusion-style models in vllm-omni.
+        # Detect them via config.json.
+    return (
+        _looks_like_bagel(model_name)
+        or _looks_like_dreamzero(model_name)
+        or _looks_like_lingbot_va(model_name)
+    )
