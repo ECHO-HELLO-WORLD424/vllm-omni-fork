@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
@@ -17,7 +16,6 @@ from vllm_omni.diffusion.data import DiffusionParallelConfig
 from vllm_omni.entrypoints.omni import Omni
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 from vllm_omni.platforms import current_omni_platform
-
 
 DEFAULT_EXAMPLE_DIR = Path(__file__).resolve().parent
 DEFAULT_OBS_DIR = DEFAULT_EXAMPLE_DIR / "robotwin_obs"
@@ -78,16 +76,12 @@ def _resolve_obs_image(obs_dir: Path, canonical_name: str, short_name: str) -> s
         p = obs_dir / candidate
         if p.exists():
             return str(p)
-    raise FileNotFoundError(
-        f"Could not find image for {canonical_name} in {obs_dir}. Tried: {', '.join(candidates)}"
-    )
+    raise FileNotFoundError(f"Could not find image for {canonical_name} in {obs_dir}. Tried: {', '.join(candidates)}")
 
 
 def build_prompt(obs_dir: Path, prompt: str) -> dict:
     images = {
-        "observation.images.cam_high": _resolve_obs_image(
-            obs_dir, "observation.images.cam_high", "cam_high"
-        ),
+        "observation.images.cam_high": _resolve_obs_image(obs_dir, "observation.images.cam_high", "cam_high"),
         "observation.images.cam_left_wrist": _resolve_obs_image(
             obs_dir, "observation.images.cam_left_wrist", "cam_left_wrist"
         ),
@@ -103,7 +97,7 @@ def build_prompt(obs_dir: Path, prompt: str) -> dict:
     }
 
 
-def resolve_prompt(prompt: Optional[str], prompt_file: Path) -> str:
+def resolve_prompt(prompt: str | None, prompt_file: Path) -> str:
     if prompt is not None and prompt.strip():
         return prompt
 

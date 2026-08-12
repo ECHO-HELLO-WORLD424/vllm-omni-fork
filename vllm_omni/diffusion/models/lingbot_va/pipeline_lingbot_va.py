@@ -14,9 +14,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.pipelines.wan.pipeline_wan import prompt_clean
-from diffusers.video_processor import VideoProcessor
-from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import load_image
+from diffusers.utils.torch_utils import randn_tensor
+from diffusers.video_processor import VideoProcessor
 from einops import rearrange
 from torch import Tensor
 from transformers import AutoTokenizer, UMT5EncoderModel
@@ -28,6 +28,7 @@ from vllm_omni.diffusion.distributed.cfg_parallel import CFGParallelMixin
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
 from vllm_omni.diffusion.request import OmniDiffusionRequest
+from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
 from vllm_omni.inputs.data import OmniTextPrompt
 
 from .modeling.lingbot_va_transformer import WanTransformer3DModel
@@ -56,22 +57,26 @@ _DEFAULT_ROBOTWIN_Q01 = [
     -1.0,
 ] + [0.0] * 16
 
-_DEFAULT_ROBOTWIN_Q99 = [
-    0.3462600058317184,
-    0.39966784834861746,
-    0.14745532035827624,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    0.034201726913452024,
-    0.39142737388610793,
-    0.1792279863357542,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-] + [0.0] * 14 + [1.0, 1.0]
+_DEFAULT_ROBOTWIN_Q99 = (
+    [
+        0.3462600058317184,
+        0.39966784834861746,
+        0.14745532035827624,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.034201726913452024,
+        0.39142737388610793,
+        0.1792279863357542,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    ]
+    + [0.0] * 14
+    + [1.0, 1.0]
+)
 
 
 def _load_transformer_config(model_path: str, local_files_only: bool = True) -> dict[str, Any]:
@@ -118,36 +123,36 @@ def get_lingbot_va_pre_process_func(od_config: OmniDiffusionConfig):
     )
 
     def pre_process_func(request: OmniDiffusionRequest) -> OmniDiffusionRequest:
-        for i, prompt in enumerate(request.prompts):
-            if isinstance(prompt, str):
-                prompt = OmniTextPrompt(prompt=prompt)
+        prompt = request.prompt
+        if isinstance(prompt, str):
+            prompt = OmniTextPrompt(prompt=prompt)
 
-            if "additional_information" not in prompt:
-                prompt["additional_information"] = {}
+        if "additional_information" not in prompt:
+            prompt["additional_information"] = {}
 
-            multi_modal_data = prompt.get("multi_modal_data", {})
-            obs_payload = prompt["additional_information"].get("obs")
-            if obs_payload is None:
-                if "obs" in multi_modal_data:
-                    obs_payload = multi_modal_data["obs"]
-                elif "images" in multi_modal_data and isinstance(multi_modal_data["images"], dict):
-                    obs_dict = {
-                        key: _to_numpy_rgb(multi_modal_data["images"][key])
-                        for key in obs_cam_keys
-                        if key in multi_modal_data["images"]
-                    }
-                    if obs_dict:
-                        obs_payload = [obs_dict]
-                elif "image" in multi_modal_data:
-                    img_arr = _to_numpy_rgb(multi_modal_data["image"])
-                    obs_payload = [{k: img_arr for k in obs_cam_keys}]
+        multi_modal_data = prompt.get("multi_modal_data", {})
+        obs_payload = prompt["additional_information"].get("obs")
+        if obs_payload is None:
+            if "obs" in multi_modal_data:
+                obs_payload = multi_modal_data["obs"]
+            elif "images" in multi_modal_data and isinstance(multi_modal_data["images"], dict):
+                obs_dict = {
+                    key: _to_numpy_rgb(multi_modal_data["images"][key])
+                    for key in obs_cam_keys
+                    if key in multi_modal_data["images"]
+                }
+                if obs_dict:
+                    obs_payload = [obs_dict]
+            elif "image" in multi_modal_data:
+                img_arr = _to_numpy_rgb(multi_modal_data["image"])
+                obs_payload = [{k: img_arr for k in obs_cam_keys}]
 
-            if obs_payload is not None:
-                if isinstance(obs_payload, dict):
-                    obs_payload = [obs_payload]
-                prompt["additional_information"]["obs"] = obs_payload
+        if obs_payload is not None:
+            if isinstance(obs_payload, dict):
+                obs_payload = [obs_payload]
+            prompt["additional_information"]["obs"] = obs_payload
 
-            request.prompts[i] = prompt
+        request.prompt = prompt
         return request
 
     return pre_process_func
@@ -251,7 +256,9 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
                 inverse_ids[j] = i
         self.inverse_used_action_channel_ids = self.model_config.get("inverse_used_action_channel_ids", inverse_ids)
         self.action_norm_method = self.model_config.get("action_norm_method", "quantiles")
-        self.norm_stat = self.model_config.get("norm_stat", {"q01": _DEFAULT_ROBOTWIN_Q01, "q99": _DEFAULT_ROBOTWIN_Q99})
+        self.norm_stat = self.model_config.get(
+            "norm_stat", {"q01": _DEFAULT_ROBOTWIN_Q01, "q99": _DEFAULT_ROBOTWIN_Q99}
+        )
 
         self.guidance_scale = float(self.model_config.get("guidance_scale", 5.0))
         self.action_guidance_scale = float(self.model_config.get("action_guidance_scale", 1.0))
@@ -355,7 +362,9 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
             )
         return prompt_embeds, negative_prompt_embeds
 
-    def normalize_latents(self, latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor) -> torch.Tensor:
+    def normalize_latents(
+        self, latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor
+    ) -> torch.Tensor:
         latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(device=latents.device)
         latents_std = latents_std.view(1, -1, 1, 1, 1).to(device=latents.device)
         latents = ((latents.float() - latents_mean) * latents_std).to(latents)
@@ -367,7 +376,9 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
         action_model_input = action_model_input_paded[self.inverse_used_action_channel_ids]
         if self.action_norm_method != "quantiles":
             raise NotImplementedError(f"Unsupported action norm method: {self.action_norm_method}")
-        action_model_input = (action_model_input - self.actions_q01) / (self.actions_q99 - self.actions_q01 + 1e-6) * 2.0 - 1.0
+        action_model_input = (action_model_input - self.actions_q01) / (
+            self.actions_q99 - self.actions_q01 + 1e-6
+        ) * 2.0 - 1.0
         return action_model_input.unsqueeze(0).unsqueeze(-1)
 
     def postprocess_action(self, action: torch.Tensor):
@@ -423,7 +434,8 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
         if latent_model_input is not None:
             input_dict["latent_res_lst"] = {
                 "noisy_latents": latent_model_input,
-                "timesteps": torch.ones([latent_model_input.shape[2]], dtype=torch.float32, device=self.device) * latent_t,
+                "timesteps": torch.ones([latent_model_input.shape[2]], dtype=torch.float32, device=self.device)
+                * latent_t,
                 "grid_id": get_mesh_id(
                     latent_model_input.shape[-3] // self.patch_size[0],
                     latent_model_input.shape[-2] // self.patch_size[1],
@@ -441,7 +453,8 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
         if action_model_input is not None:
             input_dict["action_res_lst"] = {
                 "noisy_latents": action_model_input,
-                "timesteps": torch.ones([action_model_input.shape[2]], dtype=torch.float32, device=self.device) * action_t,
+                "timesteps": torch.ones([action_model_input.shape[2]], dtype=torch.float32, device=self.device)
+                * action_t,
                 "grid_id": get_mesh_id(
                     action_model_input.shape[-3],
                     action_model_input.shape[-2],
@@ -524,9 +537,9 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
         else:
             self.latent_height, self.latent_width = self.height // 16, (self.width // 16) * len(self.obs_cam_keys)
 
-        latent_token_per_chunk = (
-            self.frame_chunk_size * self.latent_height * self.latent_width
-        ) // (self.patch_size[0] * self.patch_size[1] * self.patch_size[2])
+        latent_token_per_chunk = (self.frame_chunk_size * self.latent_height * self.latent_width) // (
+            self.patch_size[0] * self.patch_size[1] * self.patch_size[2]
+        )
         action_token_per_chunk = self.frame_chunk_size * self.action_per_frame
 
         self.transformer.create_empty_cache(
@@ -718,9 +731,13 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
 
     def decode_one_video(self, latents: torch.Tensor, output_type: str = "np"):
         latents = latents.to(self.vae.dtype)
-        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, self.vae.config.z_dim, 1, 1, 1).to(
-            latents.device,
-            latents.dtype,
+        latents_mean = (
+            torch.tensor(self.vae.config.latents_mean)
+            .view(1, self.vae.config.z_dim, 1, 1, 1)
+            .to(
+                latents.device,
+                latents.dtype,
+            )
         )
         latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
             latents.device,
@@ -739,7 +756,7 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
         extra_args = req.sampling_params.extra_args or {}
         return extra_args.get("obs")
 
-    def forward(self, req: OmniDiffusionRequest, **kwargs) -> DiffusionOutput:
+    def forward(self, req: DiffusionRequestBatch, **kwargs) -> DiffusionOutput:
         if len(req.prompts) != 1:
             raise ValueError("LingBotVAPipeline currently supports a single prompt per request")
 
@@ -787,5 +804,5 @@ class LingBotVAPipeline(nn.Module, CFGParallelMixin):
 
         return DiffusionOutput(
             output={"video": decoded_video, "actions": actions_seq},
-            custom_output={"latents": pred_latent.detach().cpu()},
+            trajectory_latents=pred_latent.detach().cpu(),
         )

@@ -200,6 +200,7 @@ class WanAttention(nn.Module):
         value = value.unflatten(2, (self.heads, -1))
 
         if rotary_emb is not None:
+
             def apply_rotary_emb(x, freqs):
                 x_out = torch.view_as_complex(x.to(torch.float64).reshape(x.shape[0], x.shape[1], x.shape[2], -1, 2))
                 x_out = torch.view_as_real(x_out * freqs).flatten(3)
@@ -256,7 +257,7 @@ class WanTransformerBlock(nn.Module):
         self.ffn = FeedForward(dim, inner_dim=ffn_dim, activation_fn="gelu-approximate")
         self.norm3 = FP32LayerNorm(dim, eps, elementwise_affine=False)
 
-        self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim ** 0.5)
+        self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
 
     def forward(self, hidden_states, encoder_hidden_states, temb, rotary_emb, update_cache=0, cache_name="pos"):
         temb_scale_shift_table = self.scale_shift_table[None] + temb.float()
@@ -293,7 +294,9 @@ class WanTransformerBlock(nn.Module):
         )
         hidden_states = hidden_states + attn_output
 
-        norm_hidden_states = (self.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(hidden_states)
+        norm_hidden_states = (self.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(
+            hidden_states
+        )
         ff_output = self.ffn(norm_hidden_states)
         hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
         return hidden_states
@@ -372,7 +375,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
         self.norm_out = FP32LayerNorm(inner_dim, eps, elementwise_affine=False)
         self.proj_out = nn.Linear(inner_dim, out_channels * math.prod(self.patch_size))
         self.action_proj_out = nn.Linear(inner_dim, action_dim)
-        self.scale_shift_table = nn.Parameter(torch.randn(1, 2, inner_dim) / inner_dim ** 0.5)
+        self.scale_shift_table = nn.Parameter(torch.randn(1, 2, inner_dim) / inner_dim**0.5)
 
     def clear_cache(self, cache_name: str):
         for block in self.blocks:

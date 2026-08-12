@@ -85,7 +85,9 @@ class FlowMatchScheduler:
         else:
             self.training = False
 
-    def step(self, model_output: torch.Tensor, timestep: torch.Tensor | float, sample: torch.Tensor, to_final: bool = False):
+    def step(
+        self, model_output: torch.Tensor, timestep: torch.Tensor | float, sample: torch.Tensor, to_final: bool = False
+    ):
         if isinstance(timestep, torch.Tensor):
             timestep = timestep.cpu()
         timestep_id = torch.argmin((self.timesteps - timestep).abs())
